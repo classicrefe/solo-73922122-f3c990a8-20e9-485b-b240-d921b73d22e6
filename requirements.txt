@@ -1,0 +1,5 @@
+fastapi==0.163.1
+uvicorn[standard]==0.54.0
+z3-solver==5.4.1.0
+sqlglot==30.32.0
+psycopg[binary]==3.3.9
