@@ -30,6 +30,27 @@ class ReproOutcome:
     query_b_result: list[list[Any]] | None = None
 
 
+@dataclass
+class QueryRowsOutcome:
+    ok: bool                     # 复算流程是否成功执行
+    rows: list[list[Any]] | None = None   # 查询实际结果行
+    detail: str = ""
+
+
+def _load_snapshot(cur, stations: list[tuple], readings: list[tuple]) -> None:
+    """在当前 search_path 下建表并装载快照数据。"""
+    cur.execute(_CREATE_STATIONS)
+    cur.execute(_CREATE_READINGS)
+    if stations:
+        cur.executemany(
+            "INSERT INTO stations (id, threshold) VALUES (%s, %s)", stations
+        )
+    if readings:
+        cur.executemany(
+            "INSERT INTO readings (station_id, value) VALUES (%s, %s)", readings
+        )
+
+
 def setup_sql(witness: CounterexampleData) -> str:
     """生成可装载的 SQL 脚本（重建表结构与反例数据）。"""
     lines = [
@@ -81,18 +102,7 @@ class Verifier:
                     cur.execute(f'CREATE SCHEMA "{schema}"')
                     cur.execute(f'SET search_path TO "{schema}"')
                     cur.execute(f"SET LOCAL statement_timeout TO {self._timeout_ms}")
-                    cur.execute(_CREATE_STATIONS)
-                    cur.execute(_CREATE_READINGS)
-                    if witness.stations:
-                        cur.executemany(
-                            "INSERT INTO stations (id, threshold) VALUES (%s, %s)",
-                            witness.stations,
-                        )
-                    if witness.readings:
-                        cur.executemany(
-                            "INSERT INTO readings (station_id, value) VALUES (%s, %s)",
-                            witness.readings,
-                        )
+                    _load_snapshot(cur, witness.stations, witness.readings)
                     cur.execute(query_a)
                     res_a = [list(r) for r in cur.fetchall()]
                     cur.execute(query_b)
@@ -106,3 +116,29 @@ class Verifier:
             query_a_result=res_a,
             query_b_result=res_b,
         )
+
+    def run_query(
+        self,
+        stations: list[tuple],
+        readings: list[tuple],
+        query: str,
+    ) -> QueryRowsOutcome:
+        """在隔离临时 schema 中装载快照并实际执行查询，返回结果行。
+
+        与 reproduce 相同的隔离方式：单事务 + 临时 schema，回滚即清理。
+        执行失败（数据库不可达 / SQL 错误 / 超时）时 ok=False。
+        """
+        schema = "cc_" + uuid.uuid4().hex
+        try:
+            with psycopg.connect(self._dsn, connect_timeout=10) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f'CREATE SCHEMA "{schema}"')
+                    cur.execute(f'SET search_path TO "{schema}"')
+                    cur.execute(f"SET LOCAL statement_timeout TO {self._timeout_ms}")
+                    _load_snapshot(cur, stations, readings)
+                    cur.execute(query)
+                    rows = [list(r) for r in cur.fetchall()]
+                conn.rollback()  # 隔离：事务内建临时模式，回滚即清理
+        except Exception as exc:  # 数据库不可达 / 执行失败 -> 未知
+            return QueryRowsOutcome(ok=False, detail=f"PostgreSQL 复算失败: {exc}")
+        return QueryRowsOutcome(ok=True, rows=rows)

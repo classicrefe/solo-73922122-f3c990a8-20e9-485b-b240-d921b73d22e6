@@ -192,7 +192,7 @@ def _base_rows(q: QueryIR, db: SymbolicDB) -> list[Row]:
     return rows
 
 
-def _encode_bool(node: BoolNode, cells: dict[tuple[str, str], Cell]):
+def encode_bool(node: BoolNode, cells: dict[tuple[str, str], Cell]):
     """SQL 三值逻辑编码，返回 (defined, value)。
 
     TRUE=(True,True)，FALSE=(True,False)，UNKNOWN=(False,*)。
@@ -205,17 +205,17 @@ def _encode_bool(node: BoolNode, cells: dict[tuple[str, str], Cell]):
         is_null, _ = cells[(node.col.table, node.col.column)]
         return BoolVal(True), ZNot(is_null) if node.negated else is_null
     if isinstance(node, And):
-        da, va = _encode_bool(node.left, cells)
-        db_, vb = _encode_bool(node.right, cells)
+        da, va = encode_bool(node.left, cells)
+        db_, vb = encode_bool(node.right, cells)
         defined = ZOr(ZAnd(da, db_), ZAnd(da, ZNot(va)), ZAnd(db_, ZNot(vb)))
         return defined, ZAnd(va, vb)
     if isinstance(node, Or):
-        da, va = _encode_bool(node.left, cells)
-        db_, vb = _encode_bool(node.right, cells)
+        da, va = encode_bool(node.left, cells)
+        db_, vb = encode_bool(node.right, cells)
         defined = ZOr(ZAnd(da, db_), ZAnd(da, va), ZAnd(db_, vb))
         return defined, ZOr(va, vb)
     if isinstance(node, Not):
-        d, v = _encode_bool(node.child, cells)
+        d, v = encode_bool(node.child, cells)
         return d, ZNot(v)
     raise TypeError(f"未知布尔节点: {node!r}")
 
@@ -240,7 +240,7 @@ def _result_multiset(q: QueryIR, db: SymbolicDB) -> list[OutRow]:
     out: list[OutRow] = []
     for present, cells in _base_rows(q, db):
         if q.where is not None:
-            defined, val = _encode_bool(q.where, cells)
+            defined, val = encode_bool(q.where, cells)
             kept = ZAnd(present, defined, val)
         else:
             kept = present
